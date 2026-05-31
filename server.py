@@ -543,15 +543,58 @@ async def api_oauth_xai_status(request: Request) -> Response:
     })
 
 
+def _config_model_provider() -> tuple[str, str]:
+    """Return (model, provider) from Hermes config.yaml, if present."""
+    config_path = Path(HERMES_HOME) / "config.yaml"
+    if not config_path.exists():
+        return "", ""
+    try:
+        import yaml
+        loaded = yaml.safe_load(config_path.read_text()) or {}
+        model_cfg = loaded.get("model") if isinstance(loaded, dict) else {}
+        if not isinstance(model_cfg, dict):
+            return "", ""
+        return str(model_cfg.get("default") or ""), str(model_cfg.get("provider") or "")
+    except Exception:
+        return "", ""
+
+
+def _has_any_oauth_or_pool_credentials() -> bool:
+    """True when Hermes auth.json contains at least one configured provider/credential."""
+    auth_path = Path(HERMES_HOME) / "auth.json"
+    if not auth_path.exists():
+        return False
+    try:
+        loaded = json.loads(auth_path.read_text())
+        if not isinstance(loaded, dict):
+            return False
+        providers = loaded.get("providers")
+        if isinstance(providers, dict) and any(bool(v) for v in providers.values()):
+            return True
+        pool = loaded.get("credential_pool")
+        if isinstance(pool, dict) and any(bool(v) for v in pool.values()):
+            return True
+        return bool(loaded.get("active_provider"))
+    except Exception:
+        return False
+
+
 def is_config_complete(data: dict[str, str] | None = None) -> bool:
     """Single source of truth for 'ready to run the gateway'.
 
     Used by: GET / redirect, auto_start on boot, admin API status.
+    Accepts both Railway/.env API-key config and Hermes-native config.yaml/auth.json
+    OAuth config (e.g. openai-codex).
     """
     if data is None:
         data = read_env(ENV_FILE)
-    has_model = bool(data.get("LLM_MODEL"))
-    has_provider = any(data.get(k) for k in PROVIDER_KEYS) or _has_xai_oauth_tokens()
+    cfg_model, cfg_provider = _config_model_provider()
+    has_model = bool(data.get("LLM_MODEL") or cfg_model)
+    has_provider = (
+        any(data.get(k) for k in PROVIDER_KEYS)
+        or _has_xai_oauth_tokens()
+        or (bool(cfg_provider) and _has_any_oauth_or_pool_credentials())
+    )
     return has_model and has_provider
 
 
@@ -765,8 +808,12 @@ class Gateway:
             model = env.get("LLM_MODEL", "")
             provider_key = next((env.get(k, "") for k in PROVIDER_KEYS if env.get(k)), "")
             print(f"[gateway] model={model or '⚠ NOT SET'} | provider_key={'set' if provider_key else '⚠ NOT SET'}", flush=True)
-            # Write config.yaml so hermes picks up the model (env vars alone aren't always enough)
-            write_config_yaml(read_env(ENV_FILE))
+            # Write config.yaml only when Railway/.env provides LLM_MODEL.
+            # For OAuth/config.yaml providers (openai-codex, qwen-oauth, etc.), rewriting
+            # from an env file without LLM_MODEL would erase the selected model.
+            env_file_data = read_env(ENV_FILE)
+            if env_file_data.get("LLM_MODEL"):
+                write_config_yaml(env_file_data)
             self.proc = await asyncio.create_subprocess_exec(
                 "hermes", "gateway",
                 stdout=asyncio.subprocess.PIPE,
