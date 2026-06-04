@@ -794,6 +794,11 @@ class Gateway:
         self.logs: deque[str] = deque(maxlen=500)
         self.started_at: float | None = None
         self.restarts = 0
+        # Child-process self-restart guard. Hermes gateway exits with code 75
+        # when an in-chat /restart requests the service manager to relaunch it.
+        # On Railway, this admin server is the service manager for the child
+        # gateway process, so _drain() must translate exit 75 into start().
+        self._service_restart_times: deque[float] = deque(maxlen=10)
 
     async def start(self):
         if self.proc and self.proc.returncode is None:
@@ -848,12 +853,41 @@ class Gateway:
 
     async def _drain(self):
         assert self.proc and self.proc.stdout
-        async for raw in self.proc.stdout:
+        proc = self.proc
+        stdout = proc.stdout
+        assert stdout is not None
+        async for raw in stdout:
             line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
             self.logs.append(line)
+        rc = proc.returncode
+        if rc is None:
+            rc = await proc.wait()
+
+        if rc == 75:
+            now = time.time()
+            # Prevent an accidental /restart redelivery or startup failure from
+            # spinning the Railway container forever. Allow 3 service-restart
+            # exits in a 5-minute window, then leave the gateway in error state.
+            self._service_restart_times.append(now)
+            recent = [t for t in self._service_restart_times if now - t < 300]
+            if len(recent) > 3:
+                msg = "[error] Gateway requested service restart too often (exit 75); refusing restart loop"
+                self.state = "error"
+                self.logs.append(msg)
+                print(f"[gateway] {msg}", flush=True)
+                return
+            msg = "[gateway] child requested service restart (exit 75); restarting subprocess"
+            self.logs.append(msg)
+            print(msg, flush=True)
+            self.state = "restarting"
+            self.started_at = None
+            self.restarts += 1
+            await self.start()
+            return
+
         if self.state == "running":
             self.state = "error"
-            self.logs.append(f"[error] Gateway exited (code {self.proc.returncode})")
+            self.logs.append(f"[error] Gateway exited (code {rc})")
 
     def status(self) -> dict:
         uptime = int(time.time() - self.started_at) if self.started_at and self.state == "running" else None
