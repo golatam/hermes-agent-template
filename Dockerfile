@@ -32,6 +32,7 @@ RUN apt-get update && \
       sqlite3 && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
+    npm install -g @railway/cli && \
     rm -rf /var/lib/apt/lists/*
 
 # Install hermes-agent (provides the `hermes` CLI) and pre-build its React
