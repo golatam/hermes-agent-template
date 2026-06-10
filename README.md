@@ -66,6 +66,7 @@ Message your Telegram bot. If you're a new user, a pairing request will appear i
 | `PORT` | `8080` | Web server port (set automatically by Railway) |
 | `ADMIN_USERNAME` | `admin` | Basic auth username |
 | `ADMIN_PASSWORD` | *(auto-generated)* | Basic auth password — if unset, a random password is printed to logs |
+| `HERMES_EXTRA_PROFILES` | `dolphin,flexify,golatam` | Optional comma-separated list of additional Hermes profiles under `/data/.hermes/profiles/` whose gateways should be supervised by the Railway admin server |
 
 All other configuration (LLM provider, model, channels, tools) is managed through the admin dashboard.
 
@@ -85,14 +86,17 @@ Parallel (search), Firecrawl (scraping), Tavily (search), FAL (image gen), Brows
 
 ```
 Railway Container
-├── Python Admin Server (Starlette + Uvicorn)
+├── Python Admin Server (Starlette + Uvicorn, PID 1)
 │   ├── /            — Admin dashboard (Basic Auth)
 │   ├── /health      — Health check (no auth)
-│   └── /api/*       — Config, status, logs, gateway, pairing
-└── hermes gateway   — Managed as async subprocess
+│   ├── /api/*       — Config, status, logs, gateway, pairing
+│   ├── hermes dashboard — Managed as async subprocess on loopback
+│   ├── hermes gateway   — Default profile, managed as async subprocess
+│   └── extra profile gateways — Optional subprocesses from HERMES_EXTRA_PROFILES
+└── /data/.hermes    — Persistent config, profiles, sessions, logs, cron, memory
 ```
 
-The admin server runs on `$PORT` and manages the Hermes gateway as a child process. Config is stored in `/data/.hermes/.env` and `/data/.hermes/config.yaml`. Gateway stdout/stderr is captured into a ring buffer and streamed to the Logs panel.
+The admin server runs on `$PORT` and manages the default Hermes gateway, dashboard, and optional extra profile gateways as child processes. Config is stored in `/data/.hermes/.env` and `/data/.hermes/config.yaml`; additional profiles live under `/data/.hermes/profiles/<name>/`. Gateway stdout/stderr is captured into Railway logs, with default-profile logs also streamed to the Logs panel.
 
 ## Running Locally
 

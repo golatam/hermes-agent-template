@@ -885,9 +885,34 @@ class Gateway:
             await self.start()
             return
 
+        if rc == 1:
+            msg = "[gateway] graceful shutdown (exit 1, likely SIGTERM); restarting subprocess"
+            self.logs.append(msg)
+            print(msg, flush=True)
+            self.state = "restarting"
+            self.started_at = None
+            self.restarts += 1
+            await self.start()
+            return
+
         if self.state == "running":
-            self.state = "error"
-            self.logs.append(f"[error] Gateway exited (code {rc})")
+            now = time.time()
+            self._service_restart_times.append(now)
+            recent = [t for t in self._service_restart_times if now - t < 600]
+            if len(recent) > 5:
+                msg = f"[error] Gateway crashed too often (exit {rc}); refusing restart loop"
+                self.state = "error"
+                self.logs.append(msg)
+                print(f"[gateway] {msg}", flush=True)
+                return
+            msg = f"[gateway] unexpected exit (code {rc}); restarting subprocess"
+            self.logs.append(msg)
+            print(msg, flush=True)
+            self.state = "restarting"
+            self.started_at = None
+            self.restarts += 1
+            await asyncio.sleep(3)
+            await self.start()
 
     def status(self) -> dict:
         uptime = int(time.time() - self.started_at) if self.started_at and self.state == "running" else None
@@ -901,6 +926,147 @@ class Gateway:
 
 gw = Gateway()
 cfg_lock = asyncio.Lock()
+
+
+# ── Additional profile gateways ───────────────────────────────────────────────
+def _configured_extra_profiles() -> tuple[str, ...]:
+    """Profiles whose gateways should be supervised by the Railway admin server.
+
+    Set HERMES_EXTRA_PROFILES=dolphin,flexify,golatam to override. The default
+    matches the multi-profile Railway template used by Kirill's deployment.
+    """
+    raw = os.environ.get("HERMES_EXTRA_PROFILES", "dolphin,flexify,golatam")
+    profiles: list[str] = []
+    for item in raw.split(","):
+        name = item.strip()
+        if not name or name == "default" or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            continue
+        home = Path(HERMES_HOME) / "profiles" / name
+        if home.is_dir() and (home / ".env").exists():
+            profiles.append(name)
+    return tuple(dict.fromkeys(profiles))
+
+
+def _process_exists(pid: int) -> bool:
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(errors="ignore")
+    except Exception:
+        return False
+    return "\nState:\tZ" not in status and "\nState: Z" not in status
+
+
+def _clear_stale_gateway_files(home: Path) -> None:
+    """Remove stale gateway pid/lock files left on the persistent Railway volume.
+
+    A fresh Railway container cannot have a live process from the previous
+    deployment, but the volume can still contain gateway.pid/gateway.lock. These
+    files make `hermes gateway run` exit with a PID-file race before it connects.
+    """
+    pid_file = home / "gateway.pid"
+    lock_file = home / "gateway.lock"
+    live_pid = None
+    if pid_file.exists():
+        try:
+            raw = pid_file.read_text(errors="ignore").strip()
+            try:
+                data = json.loads(raw)
+                live_pid = int(data.get("pid")) if isinstance(data, dict) and data.get("pid") else None
+            except Exception:
+                live_pid = int(raw) if raw.isdigit() else None
+        except Exception:
+            live_pid = None
+    if live_pid and _process_exists(live_pid):
+        return
+    for path in (pid_file, lock_file):
+        try:
+            if path.exists():
+                path.unlink()
+        except Exception as e:
+            print(f"[profiles] could not remove stale {path}: {e!r}", flush=True)
+
+
+class ExtraProfileGateway:
+    """Supervise one non-default profile gateway under Railway PID 1."""
+
+    def __init__(self, profile: str):
+        self.profile = profile
+        self.home = Path(HERMES_HOME) / "profiles" / profile
+        self.proc: asyncio.subprocess.Process | None = None
+        self.state = "stopped"
+        self.restarts = 0
+        self._restart_times: deque[float] = deque(maxlen=10)
+
+    async def start(self):
+        if self.proc and self.proc.returncode is None:
+            return
+        self.state = "starting"
+        _clear_stale_gateway_files(self.home)
+        env = {**os.environ, "HERMES_HOME": str(self.home)}
+        env.update(read_env(self.home / ".env"))
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                "hermes", "--profile", self.profile, "gateway", "run",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+            self.state = "running"
+            print(f"[{self.profile}] gateway spawned pid={self.proc.pid}", flush=True)
+            asyncio.create_task(self._drain())
+        except Exception as e:
+            self.state = "error"
+            print(f"[{self.profile}] FAILED to spawn gateway: {e!r}", flush=True)
+
+    async def stop(self):
+        if not self.proc or self.proc.returncode is not None:
+            self.state = "stopped"
+            return
+        self.state = "stopping"
+        self.proc.terminate()
+        try:
+            await asyncio.wait_for(self.proc.wait(), timeout=10)
+        except asyncio.TimeoutError:
+            self.proc.kill()
+            await self.proc.wait()
+        self.state = "stopped"
+
+    async def _drain(self):
+        assert self.proc and self.proc.stdout
+        proc = self.proc
+        stdout = proc.stdout
+        async for raw in stdout:
+            line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+            print(f"[{self.profile}] {line}", flush=True)
+        rc = proc.returncode
+        if rc is None:
+            rc = await proc.wait()
+        print(f"[{self.profile}] gateway exited rc={rc} state={self.state}", flush=True)
+        if self.state == "stopping":
+            return
+        now = time.time()
+        self._restart_times.append(now)
+        recent = [t for t in self._restart_times if now - t < 600]
+        if len(recent) > 5:
+            self.state = "error"
+            print(f"[{self.profile}] gateway crashed too often; refusing restart loop", flush=True)
+            return
+        self.state = "restarting"
+        self.restarts += 1
+        await asyncio.sleep(3)
+        await self.start()
+
+
+_extra_gateways: dict[str, ExtraProfileGateway] = {}
+
+
+async def start_extra_profile_gateways():
+    for profile in _configured_extra_profiles():
+        mgr = _extra_gateways.setdefault(profile, ExtraProfileGateway(profile))
+        asyncio.create_task(mgr.start())
+
+
+async def stop_extra_profile_gateways():
+    await asyncio.gather(*(mgr.stop() for mgr in _extra_gateways.values()), return_exceptions=True)
 
 
 # ── Hermes dashboard subprocess ───────────────────────────────────────────────
@@ -1339,10 +1505,12 @@ async def lifespan(app):
     # and it's independent of gateway state.
     asyncio.create_task(dash.start())
     await auto_start()
+    await start_extra_profile_gateways()
     try:
         yield
     finally:
         await asyncio.gather(
+            stop_extra_profile_gateways(),
             gw.stop(),
             dash.stop(),
             return_exceptions=True,
