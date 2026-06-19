@@ -55,6 +55,10 @@ from starlette.templating import Jinja2Templates
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# Exit code Hermes gateway uses to ask its service manager to relaunch it
+# (in-chat /restart, `gateway restart`). Mirrors
+# gateway/restart.py:GATEWAY_SERVICE_RESTART_EXIT_CODE in hermes-agent.
+GATEWAY_SERVICE_RESTART_EXIT_CODE = 75
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 HERMES_HOME = os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
@@ -994,7 +998,15 @@ class ExtraProfileGateway:
         self.proc: asyncio.subprocess.Process | None = None
         self.state = "stopped"
         self.restarts = 0
+        # Crash budget: unexpected exits (NOT intentional service restarts).
         self._restart_times: deque[float] = deque(maxlen=10)
+        # Separate, lenient budget for intentional `gateway restart` (exit 75),
+        # so manual/in-chat restarts don't trip the crash circuit breaker.
+        self._service_restart_times: deque[float] = deque(maxlen=20)
+        # When the crash breaker trips we no longer wedge in "error" forever:
+        # this task re-arms the gateway after a cool-off so a transient bad
+        # window self-heals without a full container redeploy.
+        self._recovery_task: asyncio.Task | None = None
 
     async def start(self):
         if self.proc and self.proc.returncode is None:
@@ -1043,16 +1055,69 @@ class ExtraProfileGateway:
         print(f"[{self.profile}] gateway exited rc={rc} state={self.state}", flush=True)
         if self.state == "stopping":
             return
+
         now = time.time()
+
+        # Intentional service restart (exit 75) or graceful SIGTERM (exit 1):
+        # the child asked to be relaunched or the platform stopped it. These are
+        # NOT crashes, so they get their own lenient budget and never trip the
+        # crash breaker. Only an implausible flood (>10 in 5 min) is refused.
+        if rc in (GATEWAY_SERVICE_RESTART_EXIT_CODE, 1):
+            reason = "service restart (exit 75)" if rc == GATEWAY_SERVICE_RESTART_EXIT_CODE \
+                else "graceful shutdown (exit 1, likely SIGTERM)"
+            self._service_restart_times.append(now)
+            recent = [t for t in self._service_restart_times if now - t < 300]
+            if len(recent) > 10:
+                print(
+                    f"[{self.profile}] gateway requested {reason} too often; "
+                    f"backing off 60s before relaunch",
+                    flush=True,
+                )
+                self.state = "restarting"
+                self.restarts += 1
+                await asyncio.sleep(60)
+                await self.start()
+                return
+            print(f"[{self.profile}] {reason}; restarting subprocess", flush=True)
+            self.state = "restarting"
+            self.restarts += 1
+            await asyncio.sleep(2)
+            await self.start()
+            return
+
+        # Unexpected exit = real crash. Apply the crash budget.
         self._restart_times.append(now)
         recent = [t for t in self._restart_times if now - t < 600]
         if len(recent) > 5:
             self.state = "error"
-            print(f"[{self.profile}] gateway crashed too often; refusing restart loop", flush=True)
+            print(
+                f"[{self.profile}] gateway crashed too often (rc={rc}); "
+                f"pausing restarts, will auto-recover in 300s",
+                flush=True,
+            )
+            # Self-heal instead of wedging forever: re-arm after a cool-off.
+            if not self._recovery_task or self._recovery_task.done():
+                self._recovery_task = asyncio.create_task(self._auto_recover())
             return
         self.state = "restarting"
         self.restarts += 1
         await asyncio.sleep(3)
+        await self.start()
+
+    async def _auto_recover(self):
+        """Re-arm a gateway that tripped the crash breaker after a cool-off.
+
+        Clears the crash-time history so the next window starts fresh. If the
+        underlying fault persists, the budget simply trips again and we retry —
+        far better than staying dead until a manual redeploy.
+        """
+        await asyncio.sleep(300)
+        if self.state != "error":
+            return
+        print(f"[{self.profile}] auto-recovery: clearing crash history and restarting", flush=True)
+        self._restart_times.clear()
+        self.state = "restarting"
+        self.restarts += 1
         await self.start()
 
 
@@ -1102,12 +1167,9 @@ class Dashboard:
                 # hermes to trust that dist and skip its npm build check,
                 # which would otherwise add ~30s to first startup (hermes >= v2026.5.16).
                 "--skip-build",
-                # --tui exposes /api/pty + /api/ws + /api/events so the
-                # dashboard's embedded Chat tab works end-to-end. Requires
-                # hermes >= v2026.4.23 — older releases exit immediately
-                # with "unrecognized arguments: --tui". The Dockerfile
-                # pre-builds ui-tui/dist/ so PTY spawn is instant.
-                "--tui",
+                # --tui was removed: the current Hermes release no longer
+                # accepts this flag. The dashboard's Chat tab still works
+                # via the gateway's own PTY endpoints.
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
