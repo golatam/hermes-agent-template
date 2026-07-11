@@ -1,260 +1,778 @@
-<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Clavito config map</title><style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:980px;margin:40px auto;padding:0 22px;line-height:1.55;color:#172126;background:#f6f7f8}h1{font-size:2rem}h2{margin-top:2rem;border-top:1px solid #d9e0e3;padding-top:1rem}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:#e9eef0;padding:.1em .35em;border-radius:4px}pre{background:#111b20;color:#e7f1f3;padding:16px;border-radius:10px;overflow:auto}li{margin:.35em 0}p{margin:.55em 0}</style></head><body><h1>Clavito / Hermes — карта текущей конфигурации</h1>
-
-<p>Дата среза: 2026-07-11  </p>
-<p>Источник: <code>/data/.hermes/config.yaml</code> + активные cron-доставки + текущая Railway-среда.  </p>
-<p>Секреты, токены и ключи намеренно не включены.</p>
-
-<h2>Короткий вывод</h2>
-
-<p>Конфиг сейчас рабочий для текущей схемы: Telegram <code>CLAVITO CENTER</code> — основной интерфейс, Discord выключен, runtime footer выключен, cron доставляет отчёты в Telegram-топики. Для VPS-миграции главный принцип — переносить <code>/data</code> layout и <code>HERMES_HOME=/data/.hermes</code>, а не Railway template.</p>
-
-<h2>1. Модель и агент</h2>
-
-<li><code>model.provider</code>: <code>openai-codex</code></li>
-<p>  - Основной провайдер модели.</p>
-<p>  - Для миграции: нужен перенос OAuth/auth state, не только <code>.env</code>.</p>
-
-<li><code>model.default</code>: <code>gpt-5.5</code></li>
-<p>  - Основная модель по конфигу.</p>
-<p>  - Риск: если в будущем нужен жёсткий pin новой модели, фиксировать явно тут.</p>
-
-<li><code>agent.max_turns</code>: <code>60</code></li>
-<p>  - Максимум итераций/tool-call циклов на один запрос.</p>
-
-<li><code>agent.reasoning_effort</code>: <code>medium</code></li>
-<p>  - Глубина рассуждений по умолчанию.</p>
-
-<li><code>agent.gateway_timeout</code>: <code>1800</code></li>
-<p>  - Таймаут долгой gateway-задачи: 30 минут.</p>
-
-<li><code>agent.restart_drain_timeout</code>: <code>180</code></li>
-<p>  - 3 минуты на корректное завершение активных задач при рестарте.</p>
-
-<li><code>agent.api_max_retries</code>: <code>3</code></li>
-<p>  - Ретраи API-вызовов.</p>
-
-<h2>2. Контекст, компрессия, память</h2>
-
-<li><code>compression.enabled</code>: <code>true</code></li>
-<p>  - Автосжатие контекста включено.</p>
-
-<li><code>compression.threshold</code>: <code>0.85</code></li>
-<p>  - Сжатие позднее, чем дефолтные ~50%; удобно для длинных Telegram-сессий.</p>
-
-<li><code>compression.target_ratio</code>: <code>0.35</code></li>
-<p>  - После сжатия оставляется примерно 35% целевого окна.</p>
-
-<li><code>compression.protect_last_n</code>: <code>20</code></li>
-<p>  - Последние 20 сообщений не сжимаются.</p>
-
-<li><code>compression.protect_first_n</code>: <code>3</code></li>
-<p>  - Первые 3 не-system сообщения защищены.</p>
-
-<li><code>memory.provider</code>: <code>holographic</code></li>
-<p>  - Активна Holographic memory.</p>
-
-<li><code>memory.memory_enabled</code>: <code>true</code></li>
-<li><code>memory.user_profile_enabled</code>: <code>true</code></li>
-<li><code>memory.memory_char_limit</code>: <code>2200</code></li>
-<li><code>memory.user_char_limit</code>: <code>1375</code></li>
-<p>  - Эти лимиты почти заполнены; новые устойчивые факты лучше хранить в <code>fact_store</code>, а не раздувать всегда-включаемую память.</p>
-
-<li><code>memory.nudge_interval</code>: <code>10</code></li>
-<p>  - Авто-напоминание/проверка памяти каждые 10 ходов.</p>
-
-<h2>3. Сессии и reset</h2>
-
-<li><code>session_reset.mode</code>: <code>idle</code></li>
-<p>  - Сброс только по простою, не по фиксированному часу.</p>
-<p>  - Это правильно для Railway: фиксированный hourly reset раньше мог конфликтовать с supervisor/restart loop.</p>
-
-<li><code>session_reset.idle_minutes</code>: <code>1440</code></li>
-<p>  - Сброс после 24 часов простоя.</p>
-
-<li><code>session_reset.at_hour</code>: отсутствует</li>
-<p>  - Хорошо: нет фиксированного daily reset.</p>
-
-<h2>4. Telegram gateway</h2>
-
-<li><code>platforms.telegram.enabled</code>: <code>true</code></li>
-<p>  - Telegram — основной интерфейс.</p>
-
-<li><code>telegram.require_mention</code>: <code>true</code></li>
-<p>  - По умолчанию в группах нужен mention/reply/wakeword.</p>
-
-<li><code>telegram.free_response_chats</code>: <code>[&#x27;-1004470067691&#x27;]</code></li>
-<p>  - Без mention разрешено только в <code>CLAVITO CENTER</code>.</p>
-
-<li><code>telegram.allowed_chats</code>: <code>[&#x27;-537675176&#x27;, &#x27;-1004470067691&#x27;, &#x27;-1003804792291&#x27;]</code></li>
-<p>  - Эти чаты вообще разрешены. Но без mention свободный режим есть только для <code>-1004470067691</code>.</p>
-
-<li><code>telegram.group_allowed_chats</code>: <code>[&#x27;-1004470067691&#x27;]</code></li>
-<p>  - Групповой no-mention/gated policy ужат до <code>CLAVITO CENTER</code>.</p>
-
-<li><code>telegram.allowed_topics</code>: отсутствует</li>
-<p>  - Значит в <code>CLAVITO CENTER</code> можно отвечать во всех топиках, не только Inbox.</p>
-
-<li>Runtime env:</li>
-<p>  - <code>TELEGRAM_REQUIRE_MENTION=true</code></p>
-<p>  - <code>TELEGRAM_FREE_RESPONSE_CHATS=-1004470067691</code></p>
-<p>  - <code>TELEGRAM_ALLOWED_CHATS=-537675176,-1004470067691,-1003804792291</code></p>
-
-<h3>Telegram topic routing</h3>
-
-<li>Inbox: <code>1</code></li>
-<li>Go Latam: <code>24</code></li>
-<li>Dolphin Anty: <code>27</code></li>
-<li>Health: <code>31</code></li>
-<li>Crypto: <code>34</code></li>
-<li>Events: <code>39</code></li>
-<li>Marketplaces: <code>42</code></li>
-<li>Sr. Extranjero: <code>46</code></li>
-<li>FGT Stone: <code>49</code></li>
-<li>Paryajpam: <code>54</code></li>
-<li>Personal finances: <code>97</code></li>
-
-<h2>5. Discord / legacy platforms</h2>
-
-<li><code>platforms.discord.enabled</code>: <code>false</code></li>
-<li><code>plugins.disabled</code> includes:</li>
-<p>  - <code>discord-platform</code></p>
-<p>  - <code>raft-platform</code></p>
-
-<p>Discord gateway сейчас должен быть выключен. В Railway env <code>DISCORD_BOT_TOKEN</code> всё ещё установлен, поэтому при будущих изменениях кода/конфига важно не дать env-token auto-enable снова включить Discord.</p>
-
-<h2>6. Display / output</h2>
-
-<li><code>display.runtime_footer.enabled</code>: <code>false</code></li>
-<li><code>display.runtime_footer.fields</code>: <code>[]</code></li>
-<p>  - Показ <code>% контекста</code> отключён.</p>
-
-<li><code>display.tool_progress</code>: <code>all</code></li>
-<p>  - Внутренний прогресс tools включён на уровне конфига. В Telegram часть прогресса может фильтроваться платформой/режимом.</p>
-
-<li><code>display.show_reasoning</code>: <code>false</code></li>
-<p>  - Reasoning не показывается пользователю.</p>
-
-<li><code>display.streaming</code>: <code>true</code></li>
-<p>  - Стриминг включён глобально.</p>
-
-<h2>7. Terminal / tools</h2>
-
-<li><code>terminal.backend</code>: <code>local</code></li>
-<p>  - Команды исполняются в текущем Railway/container окружении.</p>
-
-<li><code>terminal.cwd</code>: <code>/tmp</code></li>
-<p>  - Рабочая директория по умолчанию.</p>
-
-<li><code>terminal.timeout</code>: <code>180</code></li>
-<p>  - 3 минуты на обычную команду.</p>
-
-<li><code>delegation.max_concurrent_children</code>: <code>3</code></li>
-<li><code>delegation.max_spawn_depth</code>: <code>1</code></li>
-<li><code>delegation.max_iterations</code>: <code>50</code></li>
-<p>  - Делегирование плоское, до 3 параллельных детей.</p>
-
-<h2>8. Voice / audio</h2>
-
-<li><code>stt.enabled</code>: <code>true</code></li>
-<li><code>stt.provider</code>: <code>local</code></li>
-<p>  - Голосовые сообщения транскрибируются локальным провайдером, если зависимости доступны.</p>
-
-<li><code>tts.provider</code>: <code>edge</code></li>
-<p>  - Озвучка через Edge TTS.</p>
-
-<h2>9. Cron jobs: текущая карта доставок</h2>
-
-<p>Активные:</p>
-
-<li>Health check Garmin → <code>telegram:-1004470067691:31</code></li>
-<li>Hermes text backup to GitHub → <code>telegram:-1004470067691:1</code></li>
-<li>Hermes R2 restic backup → <code>telegram:-1004470067691:1</code></li>
-<li>TRON work USDT wallet watcher → <code>telegram:-1004470067691:34</code></li>
-<li>Weekly Valencia events digest → <code>telegram:-1004470067691:39</code></li>
-<li>Crypto portfolio monitor → <code>telegram:-1004470067691:34</code></li>
-<li>Sr. Extranjero radar digest → <code>telegram:-1004470067691:46</code></li>
-<li>Daily Telegram Inbox Review → <code>telegram:-1004470067691:1</code></li>
-
-<p>Paused / legacy:</p>
-
-<li>Discord project task capture → paused</li>
-<li>Hermes profile drift audit → paused</li>
-<li>Gateway watchdog jobs → paused</li>
-
-<h2>10. Mail routing</h2>
-
-<p>Registry:</p>
-
-<li><code>/data/obsidian-vault/email-accounts.yaml</code></li>
-<li>script: <code>/data/.hermes/scripts/mail_accounts_mcp.py</code></li>
-
-<p>Important schema:</p>
-
-<pre><code>
-email_accounts:
-  ...
-  provider: gmail
-</code></pre>
-
-<p>Not:</p>
-
-<pre><code>
-accounts:
-  ...
-  provider: google_workspace
-</code></pre>
-
-<p>Project routes:</p>
-
-<li>personal / inbox / health / events → <code>kirill@sirenko.ru</code></li>
-<li>Go Latam → <code>kirill@golatam.digital</code></li>
-<li>marketplaces / FGT Stone → <code>info@smartonlinesupplies.com</code></li>
-<li>Dolphin → <code>ksirenko@dolphin-software.online</code></li>
-<li>Paryajpam → <code>ciriloparyajpam@gmail.com</code></li>
-<li>Sr. Extranjero / Flexify → disabled/null</li>
-
-<p>External sending still needs preview + explicit confirmation.</p>
-
-<h2>11. VPS migration notes</h2>
-
-<p>Recommended target:</p>
-
-<li>Hetzner CX43</li>
-<li>16 GB RAM</li>
-<li>keep <code>/data</code> path on VPS</li>
-<li>set <code>HERMES_HOME=/data/.hermes</code></li>
-<li>native Hermes install is enough if only Clavito/Hermes runs there</li>
-
-<p>Move these paths:</p>
-
-<li><code>/data/.hermes/config.yaml</code></li>
-<li><code>/data/.hermes/.env</code></li>
-<li><code>/data/.hermes/auth.json</code></li>
-<li><code>/data/.hermes/state.db</code></li>
-<li><code>/data/.hermes/skills/</code></li>
-<li><code>/data/.hermes/cron/</code></li>
-<li><code>/data/.hermes/memories/</code></li>
-<li><code>/data/.hermes/profiles/</code></li>
-<li><code>/data/.hermes/scripts/</code></li>
-<li><code>/data/obsidian-vault/</code></li>
-<li>backup/restic config and scripts</li>
-
-<p>Do not migrate Railway template as the source of truth. On VPS use systemd/native Hermes, or Docker Compose only if we decide we want isolation/reproducibility.</p>
-
-<h2>12. Risks / cleanup candidates</h2>
-
-<li><code>DISCORD_BOT_TOKEN</code> exists in env while Discord is disabled. Safe now because plugin/platform disabled, but risky after code/config changes.</li>
-<li><code>allowed_chats</code> still includes other Telegram groups; they are mention-gated, but if <code>require_mention</code> is accidentally flipped false, bot could answer there.</li>
-<li><code>memory</code> always-on char limits are near full; durable project facts should go to <code>fact_store</code> and project vault, not MEMORY.md.</li>
-<li>Railway restart method is still supervisor-specific; after VPS migration replace with systemd service lifecycle.</li>
-<li>Telegram replay/backlog protection is not fixed in code; after restarts old updates may still replay if Telegram polling offset/dedup misbehaves.</li>
-
-<h2>13. Practical use of this file</h2>
-
-<p>Use this as:</p>
-
-<p>1. pre-migration checklist;</p>
-<p>2. rollback reference;</p>
-<p>3. config drift audit baseline;</p>
-<p>4. human-readable explanation of what Clavito currently depends on;</p>
-<p>5. source for a future interactive HTML config map.</p></body></html>
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clavito · Карта конфига</title>
+<style>
+  :root{
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+
+    --ground:#f4f6f7;
+    --surface:#ffffff;
+    --surface-2:#eef1f2;
+    --ink:#1a2327;
+    --ink-dim:#5a6b72;
+    --ink-faint:#8a999f;
+    --border:#dbe1e3;
+    --border-strong:#c6ced1;
+    --accent:#0f7d78;
+    --accent-ink:#0b5f5b;
+    --accent-soft:#d7eae8;
+    --amber:#b26a00;
+    --amber-bg:#fbf1dd;
+    --amber-edge:#e6b25e;
+    --red:#c0392b;
+    --red-bg:#fbe9e7;
+    --red-edge:#d99b90;
+    --good:#2f8f4e;
+    --good-bg:#e3f2e8;
+    --off:#7c8a90;
+    --off-bg:#e9edee;
+    --shadow: 0 1px 2px rgba(20,35,40,.05), 0 6px 20px rgba(20,35,40,.05);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --ground:#0f1518;
+      --surface:#161e22;
+      --surface-2:#1b262b;
+      --ink:#e6edef;
+      --ink-dim:#93a6ad;
+      --ink-faint:#647981;
+      --border:#26333a;
+      --border-strong:#33454d;
+      --accent:#3bb8ad;
+      --accent-ink:#6fd8ce;
+      --accent-soft:#123330;
+      --amber:#e5ac66;
+      --amber-bg:#2a2113;
+      --amber-edge:#6b5324;
+      --red:#ec8577;
+      --red-bg:#2c1410;
+      --red-edge:#6e2f26;
+      --good:#5fbf80;
+      --good-bg:#152a1d;
+      --off:#7d9199;
+      --off-bg:#1c262b;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 26px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --ground:#f4f6f7;--surface:#ffffff;--surface-2:#eef1f2;--ink:#1a2327;--ink-dim:#5a6b72;--ink-faint:#8a999f;
+    --border:#dbe1e3;--border-strong:#c6ced1;--accent:#0f7d78;--accent-ink:#0b5f5b;--accent-soft:#d7eae8;
+    --amber:#b26a00;--amber-bg:#fbf1dd;--amber-edge:#e6b25e;--red:#c0392b;--red-bg:#fbe9e7;--red-edge:#d99b90;--good:#2f8f4e;--good-bg:#e3f2e8;--off:#7c8a90;--off-bg:#e9edee;
+    --shadow:0 1px 2px rgba(20,35,40,.05),0 6px 20px rgba(20,35,40,.05);
+  }
+  :root[data-theme="dark"]{
+    --ground:#0f1518;--surface:#161e22;--surface-2:#1b262b;--ink:#e6edef;--ink-dim:#93a6ad;--ink-faint:#647981;
+    --border:#26333a;--border-strong:#33454d;--accent:#3bb8ad;--accent-ink:#6fd8ce;--accent-soft:#123330;
+    --amber:#e5ac66;--amber-bg:#2a2113;--amber-edge:#6b5324;--red:#ec8577;--red-bg:#2c1410;--red-edge:#6e2f26;--good:#5fbf80;--good-bg:#152a1d;--off:#7d9199;--off-bg:#1c262b;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.35);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--ground);color:var(--ink);
+    font-family:var(--font-sans);line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:34px 22px 80px}
+
+  /* ── header ── */
+  header{margin-bottom:26px}
+  .eyebrow{
+    font-family:var(--font-mono);font-size:11px;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--accent);font-weight:600;margin:0 0 10px;display:flex;align-items:center;gap:8px;
+  }
+  .eyebrow::before{content:"";width:26px;height:1px;background:var(--accent);display:inline-block}
+  h1{
+    font-size:clamp(1.7rem,4vw,2.5rem);line-height:1.08;margin:0 0 12px;font-weight:700;
+    letter-spacing:-.02em;text-wrap:balance;
+  }
+  .lede{color:var(--ink-dim);font-size:1rem;max-width:64ch;margin:0 0 18px}
+  .lede code{font-family:var(--font-mono);font-size:.85em;background:var(--surface-2);
+    padding:.1em .4em;border-radius:4px;color:var(--ink)}
+
+  .meta{display:flex;flex-wrap:wrap;gap:8px 10px;margin-top:4px}
+  .meta .m{
+    font-family:var(--font-mono);font-size:12px;color:var(--ink-dim);
+    background:var(--surface);border:1px solid var(--border);border-radius:999px;
+    padding:5px 11px;display:inline-flex;gap:7px;align-items:center;
+  }
+  .meta .m b{color:var(--ink);font-weight:600}
+  .meta .m .dot{width:6px;height:6px;border-radius:50%;background:var(--accent)}
+
+  /* ── stat row ── */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:24px 0 8px}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow)}
+  .stat .n{font-size:1.7rem;font-weight:700;font-family:var(--font-mono);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat.amber .n{color:var(--amber)}
+  .stat .l{font-size:12px;color:var(--ink-dim);margin-top:2px}
+
+  /* ── controls ── */
+  .controls{
+    position:sticky;top:0;z-index:20;background:var(--ground);
+    padding:14px 0 12px;margin:18px 0 6px;
+    display:flex;flex-wrap:wrap;gap:12px;align-items:center;
+    border-bottom:1px solid var(--border);
+  }
+  .search{position:relative;flex:1 1 260px;min-width:200px}
+  .search input{
+    width:100%;font-family:var(--font-mono);font-size:14px;color:var(--ink);
+    background:var(--surface);border:1px solid var(--border-strong);border-radius:9px;
+    padding:10px 12px 10px 34px;outline:none;
+  }
+  .search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+  .search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);width:15px;height:15px;color:var(--ink-faint)}
+  .toggle{display:inline-flex;align-items:center;gap:9px;cursor:pointer;user-select:none;
+    font-size:14px;color:var(--ink-dim);white-space:nowrap}
+  .toggle input{position:absolute;opacity:0;width:0;height:0}
+  .switch{width:38px;height:22px;border-radius:999px;background:var(--off-bg);border:1px solid var(--border-strong);
+    position:relative;transition:background .15s,border-color .15s;flex:none}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+    background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+  .toggle input:checked + .switch{background:var(--amber);border-color:var(--amber)}
+  .toggle input:checked + .switch::after{transform:translateX(16px)}
+  .toggle input:focus-visible + .switch{box-shadow:0 0 0 3px var(--accent-soft)}
+  .count{font-family:var(--font-mono);font-size:12px;color:var(--ink-faint);white-space:nowrap}
+
+  /* ── legend ── */
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:2px 0 22px;font-size:12.5px;color:var(--ink-dim)}
+  .legend .item{display:inline-flex;align-items:center;gap:7px}
+  .swatch{width:12px;height:12px;border-radius:3px;flex:none}
+  .swatch.amber{background:var(--amber);box-shadow:inset 0 0 0 1px var(--amber-edge)}
+  .swatch.def{background:var(--off-bg);box-shadow:inset 0 0 0 1px var(--border-strong)}
+
+  /* ── sections ── */
+  section{margin-top:34px;scroll-margin-top:80px}
+  .sec-head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+  .sec-head .idx{font-family:var(--font-mono);font-size:12px;color:var(--accent);font-weight:600}
+  .sec-head h2{font-size:1.12rem;margin:0;font-weight:650;letter-spacing:-.01em}
+  .sec-desc{color:var(--ink-dim);font-size:13.5px;margin:0 0 14px;max-width:70ch}
+
+  .rows{display:flex;flex-direction:column;gap:8px}
+  .row{
+    display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr) minmax(0,1fr);
+    gap:16px;align-items:start;
+    background:var(--surface);border:1px solid var(--border);border-left:3px solid transparent;
+    border-radius:11px;padding:13px 16px;box-shadow:var(--shadow);
+  }
+  .row.ov{border-left-color:var(--amber-edge);background:
+    linear-gradient(90deg,var(--amber-bg),transparent 62%);}
+  .row.na{opacity:.86}
+  .row.eff{border-left-color:var(--accent)}
+  .row.pending{border-left-color:var(--amber-edge);border-left-style:dashed;background:
+    linear-gradient(90deg,var(--amber-bg),transparent 62%);}
+
+  /* ── red-flagged (временно выключено) ── */
+  .row.alert{border-left-color:var(--red-edge);border-left-width:4px;background:
+    linear-gradient(90deg,var(--red-bg),transparent 62%);}
+  .row.alert .key{color:var(--red)}
+  .row.alert .prodcell .val{color:var(--red);font-weight:700}
+  .chip.alert{color:var(--red);background:var(--red-bg);box-shadow:inset 0 0 0 1px var(--red-edge);text-transform:none}
+
+  /* ── parent → child nesting ── */
+  .row.child{margin-left:30px;position:relative}
+  .row.child::before{ /* вертикальный ствол дерева */
+    content:"";position:absolute;left:-17px;top:-8px;bottom:-8px;
+    border-left:2px solid var(--border-strong);
+  }
+  .row.child.child-last::before{bottom:auto;height:calc(50% + 8px)}
+  .row.child::after{ /* локоть-отвод в карточку */
+    content:"";position:absolute;left:-17px;top:50%;width:16px;
+    border-top:2px solid var(--border-strong);
+  }
+  .row.child.dormant{opacity:.72}
+  .dormant-tag{font-family:var(--font-mono);font-size:10px;letter-spacing:.02em;
+    color:var(--ink-faint);display:inline-flex;align-items:center;gap:6px;margin-top:1px}
+  .dormant-tag::before{content:"";width:6px;height:6px;border-radius:50%;
+    background:var(--off);box-shadow:0 0 0 2px var(--off-bg)}
+  .row .key{font-family:var(--font-mono);font-size:13.5px;color:var(--accent-ink);font-weight:600;word-break:break-word}
+  .row .desc{font-size:13px;color:var(--ink-dim);margin-top:4px;line-height:1.5}
+  .row .desc em{color:var(--amber);font-style:normal;font-weight:600}
+  .cell-label{display:none;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--ink-faint);margin-bottom:3px}
+  .val{font-family:var(--font-mono);font-size:13px;color:var(--ink);word-break:break-word;font-variant-numeric:tabular-nums}
+  .prodcell{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+
+  .chip{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.03em;font-weight:600;
+    padding:2px 8px;border-radius:999px;white-space:nowrap;text-transform:uppercase}
+  .chip.ov{color:var(--amber);background:var(--amber-bg);box-shadow:inset 0 0 0 1px var(--amber-edge)}
+  .chip.def{color:var(--off);background:var(--off-bg);box-shadow:inset 0 0 0 1px var(--border-strong)}
+  .chip.na{color:var(--ink-faint);background:var(--surface-2);border:1px dashed var(--border-strong);text-transform:none}
+  .chip.eff{color:var(--accent-ink);background:var(--accent-soft);box-shadow:inset 0 0 0 1px var(--accent);text-transform:none}
+  .chip.pending{color:var(--amber);background:transparent;border:1px dashed var(--amber-edge);text-transform:none}
+  .pending-to{font-family:var(--font-mono);font-size:12.5px;color:var(--amber);font-weight:700}
+
+  .pill{font-family:var(--font-mono);font-size:12px;font-weight:600;padding:2px 9px;border-radius:6px;display:inline-block}
+  .pill.on{color:var(--good);background:var(--good-bg)}
+  .pill.off{color:var(--off);background:var(--off-bg)}
+
+  .no-results{display:none;text-align:center;color:var(--ink-dim);padding:40px;font-family:var(--font-mono);font-size:13px}
+
+  footer{margin-top:46px;padding-top:22px;border-top:1px solid var(--border);color:var(--ink-dim);font-size:13px}
+  footer h3{font-size:13px;font-family:var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--amber);margin:0 0 8px}
+  footer p{margin:0 0 10px;max-width:74ch}
+  footer code{font-family:var(--font-mono);font-size:.86em;background:var(--surface-2);padding:.1em .4em;border-radius:4px;color:var(--ink)}
+
+  @media (max-width:720px){
+    .row{grid-template-columns:1fr;gap:10px;padding:14px 15px}
+    .cell-label{display:block}
+    .row .desc{margin-bottom:2px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Hermes · Clavito / Railway → VPS</p>
+    <h1>Карта конфигурации Clavito</h1>
+    <p class="lede">Живая карта текущего конфига Clavito: что делает каждый важный ключ, что реально стоит сейчас, где есть риски и что нужно перенести при миграции на VPS. Источник — <code>/data/.hermes/config.yaml</code>, cron jobs и безопасный срез окружения без секретов.</p>
+    <div class="meta">
+      <span class="m"><span class="dot"></span>profile <b>default</b></span>
+      <span class="m">home <b>/data/.hermes</b></span>
+      <span class="m">provider <b>openai-codex</b></span>
+      <span class="m">model <b>gpt-5.5</b></span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><div class="n" id="stat-total">–</div><div class="l">параметров на карте</div></div>
+    <div class="stat amber"><div class="n" id="stat-ov">–</div><div class="l">переопределено на проде</div></div>
+    <div class="stat"><div class="n">6</div><div class="l">смысловых секций</div></div>
+    <div class="stat"><div class="n" id="stat-pending" style="color:var(--amber)">–</div><div class="l">ждут деплоя (pending)</div></div>
+  </div>
+
+  <div class="controls">
+    <label class="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="q" type="text" placeholder="поиск по ключу или описанию…" aria-label="Поиск параметров">
+    </label>
+    <label class="toggle">
+      <input type="checkbox" id="onlyov" aria-label="Только переопределённые на проде">
+      <span class="switch"></span>
+      только изменённое от дефолта
+    </label>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="legend">
+    <span class="item"><span class="swatch amber"></span>переопределено на проде (≠ дефолт)</span>
+    <span class="item"><span class="swatch def"></span>= дефолт из кода</span>
+    <span class="item"><span class="pill on" style="font-size:10px;padding:1px 7px">on</span>/<span class="pill off" style="font-size:10px;padding:1px 7px">off</span>булев переключатель</span>
+    <span class="item"><span class="swatch" style="background:var(--surface-2);border:1px dashed var(--border-strong)"></span>неактивно для openai-codex</span>
+    <span class="item"><span style="font-family:var(--font-mono);color:var(--border-strong);font-weight:700;font-size:14px;line-height:1">└</span>дочерний ключ · работает только при включённом родителе над ним</span>
+  </div>
+
+  <div id="app"></div>
+  <div class="no-results" id="nores">Ничего не найдено — попробуй другой запрос.</div>
+
+  <footer>
+    <h3>Как читать карту</h3>
+    <p><b>Дефолт</b> — типичное/кодовое значение Hermes или безопасная базовая политика. <b>На проде</b> — эффективное значение Clavito из живого <code>/data/.hermes/config.yaml</code>, cron jobs и текущей Railway-среды. Секреты, токены и ключи не включены.</p>
+    <p>Amber-полоса слева = значение отличается от дефолта или является важной рабочей настройкой. Красная полоса = риск/точка внимания, а не обязательно ошибка.</p>
+    <h3 style="margin-top:16px">Главное сейчас</h3>
+    <p>Telegram <code>CLAVITO CENTER</code> — основной интерфейс. Без mention разрешён только чат <code>-1004470067691</code>. Discord выключен, но токен всё ещё есть в окружении Railway и должен остаться неактивным. Runtime footer с процентом контекста выключен. Cron-доставки разнесены по Telegram-топикам.</p>
+    <h3 style="margin-top:16px">Для VPS-миграции</h3>
+    <p>Переносить надо не Railway template, а данные: <code>/data/.hermes</code>, <code>/data/obsidian-vault</code>, scripts, cron, auth state и backup config. На VPS лучше сохранить layout <code>/data</code> и <code>HERMES_HOME=/data/.hermes</code>, чтобы не чинить пути в cron/scripts.</p>
+  </footer>
+</div>
+
+<script>
+const B = (v)=>({bool:true,v}); // boolean marker
+const DATA = [
+  {
+    "title": "Модель и агент",
+    "desc": "Основной LLM, провайдер, reasoning и лимиты одного агентского хода.",
+    "items": [
+      {
+        "k": "model.provider",
+        "d": "Провайдер инференса. У Clavito сейчас OpenAI Codex OAuth; при VPS-миграции важно перенести auth.json/credential state, не только .env.",
+        "def": "auto",
+        "prod": "openai-codex",
+        "ov": true
+      },
+      {
+        "k": "model.default",
+        "d": "Основная модель по конфигу. Сейчас pinned на gpt-5.5; если нужен другой стабильный pin, менять явно здесь.",
+        "def": "auto / provider default",
+        "prod": "gpt-5.5",
+        "ov": true
+      },
+      {
+        "k": "agent.max_turns",
+        "d": "Потолок tool-итераций на один запрос. 60 достаточно для обычных рабочих задач, но длинные миграции лучше делать с todo/subtasks.",
+        "def": "90",
+        "prod": "60",
+        "ov": true
+      },
+      {
+        "k": "agent.reasoning_effort",
+        "d": "Глубина рассуждений модели по умолчанию.",
+        "def": "medium",
+        "prod": "medium",
+        "ov": false
+      },
+      {
+        "k": "agent.gateway_timeout",
+        "d": "Общий таймаут gateway-задачи, сек. 1800 = 30 минут.",
+        "def": "1800",
+        "prod": "1800",
+        "ov": false
+      },
+      {
+        "k": "agent.restart_drain_timeout",
+        "d": "Время на корректный drain активных задач при рестарте gateway.",
+        "def": "180",
+        "prod": "180",
+        "ov": false
+      },
+      {
+        "k": "agent.api_max_retries",
+        "d": "Ретраи API-вызовов перед сдачей.",
+        "def": "3",
+        "prod": "3",
+        "ov": false
+      }
+    ]
+  },
+  {
+    "title": "Контекст, память и сессии",
+    "desc": "Компрессия диалогов, Holographic memory и политика сброса сессий.",
+    "items": [
+      {
+        "k": "compression.enabled",
+        "d": "Автосжатие истории включено.",
+        "def": "true",
+        "prod": "true",
+        "ov": false
+      },
+      {
+        "k": "compression.threshold",
+        "d": "Порог сжатия. У Clavito стоит 0.85 — сжатие происходит поздно, чтобы Telegram-сессии дольше держали живой контекст.",
+        "def": "0.50",
+        "prod": "0.85",
+        "ov": true,
+        "child": 1
+      },
+      {
+        "k": "compression.target_ratio",
+        "d": "Размер хвоста после сжатия. 0.35 — мягче дефолта, сохраняет больше недавнего контекста.",
+        "def": "0.20",
+        "prod": "0.35",
+        "ov": true,
+        "child": 1
+      },
+      {
+        "k": "compression.protect_last_n",
+        "d": "Последние N сообщений не сжимаются.",
+        "def": "20",
+        "prod": "20",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "compression.protect_first_n",
+        "d": "Первые N не-system сообщений защищены от сжатия.",
+        "def": "3",
+        "prod": "3",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "memory.provider",
+        "d": "Провайдер долговременной памяти. Активна Holographic memory + fact_store.",
+        "def": "built-in",
+        "prod": "holographic",
+        "ov": true
+      },
+      {
+        "k": "memory.memory_enabled",
+        "d": "Память агента MEMORY.md включена.",
+        "def": "true",
+        "prod": "true",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "memory.user_profile_enabled",
+        "d": "Профиль пользователя USER.md включён.",
+        "def": "true",
+        "prod": "true",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "memory.memory_char_limit",
+        "d": "Лимит MEMORY.md. Сейчас почти заполнен, поэтому проектные факты лучше класть в fact_store/project vault.",
+        "def": "2200",
+        "prod": "2200",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "memory.user_char_limit",
+        "d": "Лимит USER.md. Тоже почти заполнен — только самые устойчивые предпочтения.",
+        "def": "1375",
+        "prod": "1375",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "memory.nudge_interval",
+        "d": "Периодические memory nudges. Оставлено дефолтно, но сохранять надо выборочно, не весь Inbox.",
+        "def": "10",
+        "prod": "10",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "session_reset.mode",
+        "d": "Сброс сессии только по простою. Это безопаснее Railway fixed-hour reset, который мог конфликтовать с supervisor.",
+        "def": "both",
+        "prod": "idle",
+        "ov": true
+      },
+      {
+        "k": "session_reset.idle_minutes",
+        "d": "Сброс после 24 часов простоя.",
+        "def": "1440",
+        "prod": "1440",
+        "ov": false,
+        "child": 1
+      },
+      {
+        "k": "session_reset.at_hour",
+        "d": "Фиксированный daily reset отсутствует. Это намеренно.",
+        "def": "4",
+        "prod": "не задан",
+        "ov": true,
+        "child": 1,
+        "dormant": "mode: idle"
+      }
+    ]
+  },
+  {
+    "title": "Telegram и каналы",
+    "desc": "Главная рабочая схема: CLAVITO CENTER без mention, все остальные Telegram-группы gated.",
+    "items": [
+      {
+        "k": "platforms.telegram.enabled",
+        "d": "Telegram gateway включён и является основным интерфейсом.",
+        "def": "false / env-driven",
+        "prod": "true",
+        "ov": true
+      },
+      {
+        "k": "telegram.require_mention",
+        "d": "Глобально в группах нужен mention/reply/wakeword. Это защита от случайных ответов в чужих группах.",
+        "def": "true",
+        "prod": "true",
+        "ov": false
+      },
+      {
+        "k": "telegram.free_response_chats",
+        "d": "Исключение: без mention можно отвечать только в CLAVITO CENTER.",
+        "def": "[]",
+        "prod": "['-1004470067691']",
+        "ov": true
+      },
+      {
+        "k": "telegram.allowed_chats",
+        "d": "Список Telegram-чатов, где бот вообще может работать. Не равно free-response.",
+        "def": "[] / env",
+        "prod": "['-537675176','-1004470067691','-1003804792291']",
+        "ov": true
+      },
+      {
+        "k": "telegram.group_allowed_chats",
+        "d": "Групповой allowlist сейчас ужат до CLAVITO CENTER.",
+        "def": "[]",
+        "prod": "['-1004470067691']",
+        "ov": true
+      },
+      {
+        "k": "telegram.allowed_topics",
+        "d": "Не задано — в CLAVITO CENTER можно отвечать во всех forum topics, а не только Inbox.",
+        "def": "null",
+        "prod": "null",
+        "ov": false
+      },
+      {
+        "k": "CLAVITO CENTER topics",
+        "d": "Topic IDs для routing и cron: Inbox=1, Go Latam=24, Dolphin=27, Health=31, Crypto=34, Events=39, Marketplaces=42, Sr Extranjero=46, FGT Stone=49, Paryajpam=54, personal finance=97.",
+        "def": "—",
+        "prod": "активно",
+        "ov": true
+      }
+    ]
+  },
+  {
+    "title": "Discord и legacy-платформы",
+    "desc": "Discord отключён; Telegram теперь primary interface.",
+    "items": [
+      {
+        "k": "platforms.discord.enabled",
+        "d": "Discord gateway отключён в конфиге.",
+        "def": "false / env-driven",
+        "prod": "false",
+        "ov": false
+      },
+      {
+        "k": "plugins.disabled",
+        "d": "Отключены raft-platform и discord-platform.",
+        "def": "[]",
+        "prod": "['raft-platform','discord-platform']",
+        "ov": true
+      },
+      {
+        "k": "DISCORD_BOT_TOKEN env",
+        "d": "Токен в окружении Railway всё ещё установлен. Значение не хранится и не показывается. Риск: код/env auto-enable может попытаться оживить Discord после будущих изменений.",
+        "def": "unset",
+        "prod": "set / redacted",
+        "ov": true,
+        "alert": 1
+      }
+    ]
+  },
+  {
+    "title": "Вывод, голос, инструменты",
+    "desc": "Как Clavito отвечает в мессенджере, показывает прогресс, транскрибирует голос и запускает инструменты.",
+    "items": [
+      {
+        "k": "display.runtime_footer",
+        "d": "Footer с моделью/% контекста отключён по просьбе Кирилла.",
+        "def": "off",
+        "prod": "off · fields=[]",
+        "ov": false
+      },
+      {
+        "k": "display.tool_progress",
+        "d": "Детализация tool progress на уровне конфига.",
+        "def": "all",
+        "prod": "all",
+        "ov": false
+      },
+      {
+        "k": "display.show_reasoning",
+        "d": "Reasoning не показывается пользователю.",
+        "def": "false",
+        "prod": "false",
+        "ov": false
+      },
+      {
+        "k": "display.streaming",
+        "d": "Глобальный streaming включён.",
+        "def": "true",
+        "prod": "true",
+        "ov": false
+      },
+      {
+        "k": "stt.enabled",
+        "d": "Авто-транскрипция голосовых включена.",
+        "def": "true",
+        "prod": "true",
+        "ov": false
+      },
+      {
+        "k": "stt.provider",
+        "d": "Локальный STT-провайдер, если зависимости доступны.",
+        "def": "auto/local",
+        "prod": "local",
+        "ov": false
+      },
+      {
+        "k": "tts.provider",
+        "d": "Text-to-speech через Edge.",
+        "def": "edge",
+        "prod": "edge",
+        "ov": false
+      },
+      {
+        "k": "terminal.backend",
+        "d": "Команды исполняются локально внутри текущего Railway/container окружения.",
+        "def": "local",
+        "prod": "local",
+        "ov": false
+      },
+      {
+        "k": "terminal.cwd",
+        "d": "Рабочая директория терминала по умолчанию.",
+        "def": ".",
+        "prod": "/tmp",
+        "ov": true
+      },
+      {
+        "k": "delegation.max_concurrent_children",
+        "d": "До 3 subagents параллельно.",
+        "def": "3",
+        "prod": "3",
+        "ov": false
+      }
+    ]
+  },
+  {
+    "title": "Cron, mail routing и VPS",
+    "desc": "Автоматизации, почтовая маршрутизация и что важно перенести на VPS.",
+    "items": [
+      {
+        "k": "cron.health",
+        "d": "Garmin health check доставляется в topic Health.",
+        "def": "—",
+        "prod": "telegram:-1004470067691:31",
+        "ov": true
+      },
+      {
+        "k": "cron.backups",
+        "d": "Text backup и R2/restic backup доставляются в Inbox.",
+        "def": "—",
+        "prod": "telegram:-1004470067691:1",
+        "ov": true
+      },
+      {
+        "k": "cron.crypto",
+        "d": "TRON watcher и crypto portfolio доставляются в Crypto topic.",
+        "def": "—",
+        "prod": "telegram:-1004470067691:34",
+        "ov": true
+      },
+      {
+        "k": "cron.events",
+        "d": "Еженедельная афиша Валенсии доставляется в Events.",
+        "def": "—",
+        "prod": "telegram:-1004470067691:39",
+        "ov": true
+      },
+      {
+        "k": "cron.sr_extranjero",
+        "d": "Sr. Extranjero radar digest доставляется в topic 46.",
+        "def": "—",
+        "prod": "telegram:-1004470067691:46",
+        "ov": true
+      },
+      {
+        "k": "cron.paused_legacy",
+        "d": "Discord capture, profile drift и gateway watchdog jobs сейчас paused/legacy.",
+        "def": "—",
+        "prod": "paused",
+        "ov": true
+      },
+      {
+        "k": "mail_accounts registry",
+        "d": "Единая почтовая registry: /data/obsidian-vault/email-accounts.yaml + /data/.hermes/scripts/mail_accounts_mcp.py. Schema: email_accounts + provider:gmail.",
+        "def": "—",
+        "prod": "active",
+        "ov": true
+      },
+      {
+        "k": "mail preview policy",
+        "d": "Любая внешняя отправка email требует preview и явного подтверждения Кирилла.",
+        "def": "—",
+        "prod": "required",
+        "ov": true
+      },
+      {
+        "k": "VPS migration layout",
+        "d": "Для переезда сохранить /data layout и HERMES_HOME=/data/.hermes; переносить данные, не Railway template.",
+        "def": "—",
+        "prod": "recommended",
+        "ov": true
+      }
+    ]
+  }
+];
+
+function valHTML(v){
+  if(v && v.bool){
+    const on = v.v === "true";
+    return `<span class="pill ${on?'on':'off'}">${v.v}</span>`;
+  }
+  return `<span class="val">${v}</span>`;
+}
+function plain(v){ return (v && v.bool) ? v.v : String(v); }
+
+const app = document.getElementById('app');
+let totalCount = 0, ovCount = 0, pendingCount = 0;
+
+DATA.forEach((sec, i)=>{
+  sec.items.forEach(it=>{ totalCount++; if(it.ov) ovCount++; if(it.pending !== undefined) pendingCount++; });
+  const rows = sec.items.map((it, idx)=>{
+    const hasEff = it.eff !== undefined;
+    const hasPending = it.pending !== undefined;
+    const prodV = it.ov ? it.prod : (hasEff ? it.eff : it.def);   // не переопределено → конкретный дефолт (или эффективный резолв)
+    const hay = (it.k + ' ' + it.d + ' ' + plain(it.def) + ' ' + plain(prodV) + ' ' + (hasPending?plain(it.pending):'')).toLowerCase();
+    const rowcls = hasPending ? 'pending' : (it.ov ? 'ov' : (it.na ? 'na' : (hasEff ? 'eff' : '')));
+    const nextIsChild = it.child && sec.items[idx+1] && sec.items[idx+1].child;   // последний ребёнок в группе → └, иначе ├ (непрерывный ствол)
+    const childcls = it.child ? ('child' + (nextIsChild ? '' : ' child-last') + (it.dormant ? ' dormant' : '')) : '';
+    const alertcls = it.alert ? ' alert' : '';   // красный флаг: временно выключено
+    const dormantTag = it.dormant ? `<span class="dormant-tag" title="Родитель в отключающем состоянии — ключ сейчас не работает">спит · ${it.dormant}</span>` : '';
+    let extra = '', chip;
+    if(hasPending){
+      extra = `<span class="pending-to">→ ${valHTML(it.pending)}</span>`;
+      chip = `<span class="chip pending" title="В незакоммиченной правке шаблона; применится после деплоя">ждёт деплоя</span>`;
+    } else if(it.na) chip = `<span class="chip na" title="Ключ провайдера, неактивный для openai-codex">${it.na}</span>`;
+    else if(hasEff) chip = `<span class="chip eff" title="auto резолвится на этот бэкенд из-за окружения Клови">резолв у Клови</span>`;
+    else if(it.alert) chip = `<span class="chip alert" title="Временно выключено — вернуть позже">⏸ временно</span>`;
+    else chip = `<span class="chip ${it.ov?'ov':'def'}">${it.ov?'изменено':'= дефолт'}</span>`;
+    return `<div class="row ${rowcls} ${childcls}${alertcls}" data-h="${hay.replace(/"/g,'&quot;')}" data-ov="${it.ov?1:0}">
+      <div class="keycell">
+        <div class="key">${it.k}</div>
+        <div class="desc">${it.d}</div>
+      </div>
+      <div class="defcell">
+        <div class="cell-label">дефолт</div>
+        ${valHTML(it.def)}
+      </div>
+      <div class="prodcell">
+        <div class="cell-label">на проде</div>
+        ${valHTML(prodV)}
+        ${extra}
+        ${chip}
+        ${dormantTag}
+      </div>
+    </div>`;
+  }).join('');
+  app.insertAdjacentHTML('beforeend', `
+    <section>
+      <div class="sec-head"><span class="idx">0${i+1}</span><h2>${sec.title}</h2></div>
+      <p class="sec-desc">${sec.desc}</p>
+      <div class="rows">${rows}</div>
+    </section>`);
+});
+
+document.getElementById('stat-total').textContent = totalCount;
+document.getElementById('stat-ov').textContent = ovCount;
+document.getElementById('stat-pending').textContent = pendingCount;
+
+const q = document.getElementById('q');
+const onlyov = document.getElementById('onlyov');
+const nores = document.getElementById('nores');
+const countEl = document.getElementById('count');
+
+function apply(){
+  const term = q.value.trim().toLowerCase();
+  const ovf = onlyov.checked;
+  let shown = 0;
+  document.querySelectorAll('.row').forEach(r=>{
+    const okText = !term || r.dataset.h.includes(term);
+    const okOv = !ovf || r.dataset.ov === '1';
+    const vis = okText && okOv;
+    r.style.display = vis ? '' : 'none';
+    if(vis) shown++;
+  });
+  document.querySelectorAll('section').forEach(s=>{
+    const any = [...s.querySelectorAll('.row')].some(r=>r.style.display!=='none');
+    s.style.display = any ? '' : 'none';
+  });
+  nores.style.display = shown ? 'none' : 'block';
+  countEl.textContent = shown + ' / ' + totalCount + ' показано';
+}
+q.addEventListener('input', apply);
+onlyov.addEventListener('change', apply);
+apply();
+</script>
+</body>
+</html>
